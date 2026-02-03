@@ -212,9 +212,6 @@ First fetch downloads ~57 GRIB files. Subsequent loads use cached data.
 - Additional hub locations
 - Ensemble forecast support
 
-## License
-
-This project is provided as-is for educational and analytical purposes.
 
 ## Notes
 
