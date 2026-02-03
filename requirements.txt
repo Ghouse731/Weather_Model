@@ -1,0 +1,8 @@
+herbie-data>=2023.3.0
+xarray>=2022.0.0
+numpy>=1.21.0
+pandas>=1.4.0
+streamlit>=1.20.0
+plotly>=5.0.0
+cfgrib>=0.9.10
+streamlit-autorefresh>=1.0.0

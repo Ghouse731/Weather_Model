@@ -1,0 +1,5 @@
+# Ignore all GFS model run data files
+*.json
+
+# But keep this directory in git
+!.gitignore
