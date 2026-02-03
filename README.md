@@ -1,6 +1,6 @@
 # GFS Weather Model - Natural Gas Hub Analysis
 
-A Streamlit application that fetches GFS (Global Forecast System) weather model data for key natural gas trading hubs, calculates Heating Degree Days (HDD) and Cooling Degree Days (CDD), and compares forecast changes between model runs.
+A Streamlit application that fetches GFS weather model data for key natural gas trading hubs, calculates Heating Degree Days (HDD) and Cooling Degree Days (CDD), and compares forecast changes between model runs.
 
 ## Features
 
