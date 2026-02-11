@@ -120,27 +120,27 @@ def get_total_degree_days(hub_data: Dict[str, List[float]]) -> Tuple[float, floa
     return total_hdd, total_cdd
 
 
-def create_degree_days_dataframe(hub_results: Dict[str, Dict]) -> pd.DataFrame:
+def create_degree_days_dataframe(city_results: Dict[str, Dict]) -> pd.DataFrame:
     """
-    Create a summary DataFrame of degree days for all hubs.
+    Create a summary DataFrame of degree days for all cities.
 
     Args:
-        hub_results: Results from calculate_all_hubs_degree_days()
+        city_results: Results from calculate_all_hubs_degree_days()
 
     Returns:
-        pd.DataFrame: Summary with total HDD/CDD for each hub
+        pd.DataFrame: Summary with total HDD/CDD for each city
     """
-    from src.config import HUBS
+    from src.config import POPULATION_CENTERS, FORECAST_DAYS
 
     summary_data = []
 
-    for hub_id, data in hub_results.items():
+    for city_id, data in city_results.items():
         total_hdd, total_cdd = get_total_degree_days(data)
 
-        from src.config import FORECAST_DAYS
+        city_info = POPULATION_CENTERS.get(city_id, {'name': city_id, 'state': ''})
         summary_data.append({
-            'Hub': HUBS[hub_id]['name'],
-            'Location': HUBS[hub_id]['location'],
+            'City': city_info['name'],
+            'State': city_info.get('state', ''),
             f'Total HDD ({FORECAST_DAYS}-day)': round(total_hdd, 1),
             f'Total CDD ({FORECAST_DAYS}-day)': round(total_cdd, 1),
             'Avg Daily Temp (°F)': round(np.mean(data['daily_temps']), 1)

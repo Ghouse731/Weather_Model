@@ -2,10 +2,10 @@
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Optional, List
-from src.config import DATA_DIR, MAX_STORED_RUNS, FORECAST_DAYS
+from src.config import DATA_DIR, MAX_STORED_RUNS, FORECAST_DAYS, POPULATION_CENTERS
 
 
 def ensure_data_directory():
@@ -28,34 +28,62 @@ def get_run_filename(run_time: datetime, partial: bool = False) -> str:
     return f"{base}_partial.json" if partial else f"{base}.json"
 
 
-def save_model_run(run_time: datetime, hub_data: Dict[str, Dict]):
+def save_model_run(run_time: datetime, city_data: Dict[str, Dict],
+                   aggregates: Optional[Dict] = None,
+                   vs_normal: Optional[Dict] = None):
     """
     Save model run data to JSON file.
 
     Args:
         run_time: GFS run timestamp
-        hub_data: Dict with hub results from calculate_all_hubs_degree_days()
+        city_data: Dict with city results from calculate_all_hubs_degree_days()
+        aggregates: Optional dict with national/regional aggregates
+        vs_normal: Optional dict with deviation from normal data
 
     Raises:
         ValueError: If data has fewer than FORECAST_DAYS days
     """
     ensure_data_directory()
 
-    forecast_days = len(next(iter(hub_data.values()))['daily_temps'])
+    # Check all cities have enough days (not just the first one)
+    print(f"DEBUG save_model_run: Checking {len(city_data)} cities...", flush=True)
+    min_days = None
+    min_city = None
+    for city_id, city_data_item in city_data.items():
+        days = len(city_data_item.get('daily_temps', []))
+        print(f"  - {city_id}: {days} days", flush=True)
+        if min_days is None or days < min_days:
+            min_days = days
+            min_city = city_id
+
+    forecast_days = min_days if min_days is not None else 0
+    print(f"DEBUG: min_days={forecast_days} (from {min_city}), FORECAST_DAYS={FORECAST_DAYS}", flush=True)
 
     # Don't save incomplete runs
     if forecast_days < FORECAST_DAYS:
+        print(f"ERROR: Incomplete run - {min_city} has only {forecast_days} days (expected {FORECAST_DAYS})", flush=True)
         raise ValueError(
-            f"Refusing to save incomplete run: only {forecast_days} days "
+            f"Refusing to save incomplete run: {min_city} has only {forecast_days} days "
             f"(expected {FORECAST_DAYS}). Data may not be fully published yet."
         )
 
+    print(f"DEBUG: All cities have >= {FORECAST_DAYS} days, proceeding to save...", flush=True)
+
     data = {
         'run_time': run_time.isoformat(),
+        'fetch_completed_at': datetime.now(timezone(timedelta(hours=-6))).strftime('%Y-%m-%d %I:%M %p CT'),
         'model': 'GFS',
         'forecast_days': forecast_days,
-        'hubs': hub_data
+        'cities': city_data
     }
+
+    # Add aggregates if available
+    if aggregates:
+        data['aggregates'] = aggregates
+
+    # Add vs-normal data if available
+    if vs_normal:
+        data['vs_normal'] = vs_normal
 
     filepath = os.path.join(DATA_DIR, get_run_filename(run_time))
 
@@ -87,6 +115,31 @@ def load_model_run(run_time: datetime) -> Optional[Dict]:
     return data
 
 
+def get_city_data(run_data: Dict) -> Dict[str, Dict]:
+    """
+    Get city data from a run, handling both old and new formats.
+
+    Args:
+        run_data: Run data from load_model_run()
+
+    Returns:
+        dict: City location data
+    """
+    # New format uses 'cities' key
+    if 'cities' in run_data:
+        return run_data['cities']
+
+    # Old format compatibility: check for 'hubs' or 'population_centers'
+    all_data = {}
+    if 'hubs' in run_data:
+        all_data.update(run_data['hubs'])
+    if 'population_centers' in run_data:
+        all_data.update(run_data['population_centers'])
+
+    # Filter to only population centers
+    return {k: v for k, v in all_data.items() if k in POPULATION_CENTERS}
+
+
 def get_latest_saved_run() -> Optional[Dict]:
     """
     Get the most recently saved model run with complete data.
@@ -96,7 +149,9 @@ def get_latest_saved_run() -> Optional[Dict]:
     """
     ensure_data_directory()
 
-    files = sorted([f for f in os.listdir(DATA_DIR) if f.startswith('gfs_') and f.endswith('.json')])
+    # Get all non-partial files
+    files = sorted([f for f in os.listdir(DATA_DIR)
+                    if f.startswith('gfs_') and f.endswith('.json') and '_partial' not in f])
 
     if not files:
         return None
@@ -123,7 +178,9 @@ def get_all_saved_runs() -> List[Dict]:
     """
     ensure_data_directory()
 
-    files = sorted([f for f in os.listdir(DATA_DIR) if f.startswith('gfs_') and f.endswith('.json')])
+    # Get all non-partial files
+    files = sorted([f for f in os.listdir(DATA_DIR)
+                    if f.startswith('gfs_') and f.endswith('.json') and '_partial' not in f])
 
     runs = []
     for filename in files:
@@ -141,7 +198,9 @@ def cleanup_old_runs():
     """
     ensure_data_directory()
 
-    files = sorted([f for f in os.listdir(DATA_DIR) if f.startswith('gfs_') and f.endswith('.json')])
+    # Only clean up complete runs (not partial)
+    files = sorted([f for f in os.listdir(DATA_DIR)
+                    if f.startswith('gfs_') and f.endswith('.json') and '_partial' not in f])
 
     if len(files) > MAX_STORED_RUNS:
         files_to_delete = files[:-MAX_STORED_RUNS]
@@ -167,7 +226,7 @@ def get_previous_run_data(current_run_time: datetime) -> Optional[Dict]:
     return load_model_run(prev_run_time)
 
 
-def save_partial_run(run_time: datetime, hub_data: Dict[str, Dict],
+def save_partial_run(run_time: datetime, city_data: Dict[str, Dict],
                      percent_complete: float, hours_fetched: int, hours_expected: int,
                      last_fetched_hour: int = 0):
     """
@@ -175,7 +234,7 @@ def save_partial_run(run_time: datetime, hub_data: Dict[str, Dict],
 
     Args:
         run_time: GFS run timestamp
-        hub_data: Dict with hub results (may be partial)
+        city_data: Dict with city results (may be partial)
         percent_complete: Percentage of data fetched (0-100)
         hours_fetched: Number of forecast hours fetched
         hours_expected: Total expected forecast hours
@@ -183,7 +242,7 @@ def save_partial_run(run_time: datetime, hub_data: Dict[str, Dict],
     """
     ensure_data_directory()
 
-    forecast_days = len(next(iter(hub_data.values()))['daily_temps'])
+    forecast_days = len(next(iter(city_data.values()))['daily_temps'])
 
     data = {
         'run_time': run_time.isoformat(),
@@ -194,7 +253,7 @@ def save_partial_run(run_time: datetime, hub_data: Dict[str, Dict],
         'hours_fetched': hours_fetched,
         'hours_expected': hours_expected,
         'last_fetched_hour': last_fetched_hour,
-        'hubs': hub_data
+        'cities': city_data
     }
 
     filepath = os.path.join(DATA_DIR, get_run_filename(run_time, partial=True))
@@ -235,17 +294,21 @@ def delete_partial_run(run_time: datetime):
         os.remove(filepath)
 
 
-def promote_partial_to_complete(run_time: datetime, hub_data: Dict[str, Dict]):
+def promote_partial_to_complete(run_time: datetime, city_data: Dict[str, Dict],
+                                aggregates: Optional[Dict] = None,
+                                vs_normal: Optional[Dict] = None):
     """
     Promote a partial run to a complete run.
     Saves the complete data and removes the partial file.
 
     Args:
         run_time: GFS run timestamp
-        hub_data: Complete hub data
+        city_data: Complete city data
+        aggregates: Optional aggregates data
+        vs_normal: Optional vs-normal data
     """
     # Save as complete
-    save_model_run(run_time, hub_data)
+    save_model_run(run_time, city_data, aggregates, vs_normal)
 
     # Remove partial file
     delete_partial_run(run_time)
@@ -258,4 +321,4 @@ def get_latest_complete_run() -> Optional[Dict]:
     Returns:
         dict: Latest complete run data, or None if none found
     """
-    return get_latest_saved_run()  # Existing function already filters for complete runs
+    return get_latest_saved_run()

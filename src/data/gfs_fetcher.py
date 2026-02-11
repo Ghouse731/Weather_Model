@@ -260,7 +260,7 @@ def fetch_gfs_temperature(run_time: Optional[datetime] = None,
                 print(f"  ... (suppressing further error messages)")
             continue
 
-    print(f"\nFetch complete: {successful_fetches} successful, {failed_fetches} failed")
+    print(f"\nFetch complete: {successful_fetches} successful, {failed_fetches} failed", flush=True)
 
     expected_points = len(list(range(0, forecast_hours + 1, 6)))
     # Require 95% of data points to ensure complete 14-day forecast
@@ -273,9 +273,35 @@ def fetch_gfs_temperature(run_time: Optional[datetime] = None,
             f"The GFS run is still being published. Please try again in a few minutes."
         )
 
+    # Debug: Check coordinate consistency before concat
+    print(f"DEBUG: Checking coordinate consistency across {len(datasets)} datasets...", flush=True)
+    lat_shapes = set()
+    lon_shapes = set()
+    for i, ds in enumerate(datasets):
+        lat_shapes.add(ds.latitude.shape)
+        lon_shapes.add(ds.longitude.shape)
+    if len(lat_shapes) > 1 or len(lon_shapes) > 1:
+        print(f"WARNING: Inconsistent coordinate shapes! lat_shapes={lat_shapes}, lon_shapes={lon_shapes}", flush=True)
+    else:
+        print(f"DEBUG: All datasets have consistent shapes: lat={lat_shapes}, lon={lon_shapes}", flush=True)
+
     # Combine all forecast hours into single dataset
     # Use coords='minimal' and compat='override' to handle datasets with different coordinate variables
     combined = xr.concat(datasets, dim='time', coords='minimal', compat='override')
+
+    # Debug: Check for NaN in combined data
+    temp_var = None
+    for var in combined.data_vars:
+        if 'TMP' in var or 't2m' in var.lower():
+            temp_var = var
+            break
+    if temp_var:
+        total_values = combined[temp_var].size
+        nan_count = int(combined[temp_var].isnull().sum())
+        if nan_count > 0:
+            print(f"WARNING: Combined data has {nan_count}/{total_values} NaN values ({100*nan_count/total_values:.1f}%)", flush=True)
+        else:
+            print(f"DEBUG: Combined data has NO NaN values", flush=True)
 
     # Add run time as attribute
     combined.attrs['run_time'] = run_time.isoformat()
@@ -428,16 +454,50 @@ def fetch_gfs_partial(run_time: datetime,
 
     # Combine new data (if any)
     if new_points > 0:
+        # Debug: Check coordinate consistency before concat
+        print(f"DEBUG partial: Checking coordinate consistency across {len(datasets)} new datasets...", flush=True)
+        lat_shapes = set()
+        lon_shapes = set()
+        for i, ds in enumerate(datasets):
+            lat_shapes.add(ds.latitude.shape)
+            lon_shapes.add(ds.longitude.shape)
+        if len(lat_shapes) > 1 or len(lon_shapes) > 1:
+            print(f"WARNING partial: Inconsistent coordinate shapes! lat_shapes={lat_shapes}, lon_shapes={lon_shapes}", flush=True)
+        else:
+            print(f"DEBUG partial: All new datasets have consistent shapes: lat={lat_shapes}, lon={lon_shapes}", flush=True)
+
+        # Debug: Show first dataset structure
+        print(f"DEBUG partial: First dataset dims: {dict(datasets[0].dims)}", flush=True)
+        print(f"DEBUG partial: First dataset data_vars: {list(datasets[0].data_vars)}", flush=True)
+
         # Use coords='minimal' and compat='override' to handle datasets with different coordinate variables
         new_combined = xr.concat(datasets, dim='time', coords='minimal', compat='override')
+        print(f"DEBUG partial: After concat dims: {dict(new_combined.dims)}", flush=True)
 
         # Merge with existing data if provided
         if existing_data is not None:
+            print(f"DEBUG partial: Existing data dims: {dict(existing_data.dims)}", flush=True)
             combined = xr.concat([existing_data, new_combined], dim='time', coords='minimal', compat='override')
+            print(f"DEBUG partial: After merge with existing, combined dims: {dict(combined.dims)}", flush=True)
         else:
             combined = new_combined
+
+        # Debug: Check for NaN in combined data
+        temp_var = None
+        for var in combined.data_vars:
+            if 'TMP' in var or 't2m' in var.lower():
+                temp_var = var
+                break
+        if temp_var:
+            total_values = combined[temp_var].size
+            nan_count = int(combined[temp_var].isnull().sum())
+            if nan_count > 0:
+                print(f"WARNING partial: Combined data has {nan_count}/{total_values} NaN values ({100*nan_count/total_values:.1f}%)", flush=True)
+            else:
+                print(f"DEBUG partial: Combined data has NO NaN values", flush=True)
     elif existing_data is not None:
         # No new data, just return existing
+        print(f"DEBUG partial: No new data, using existing_data with dims: {dict(existing_data.dims)}", flush=True)
         combined = existing_data
     else:
         # No data at all
@@ -453,8 +513,13 @@ def fetch_gfs_partial(run_time: datetime,
 
     combined.attrs['run_time'] = run_time.isoformat()
     # Store last fetched hour for resume capability
-    last_fetched_hour = start_hour + (new_points * 6) if new_points > 0 else start_hour
-    combined.attrs['last_fetched_hour'] = last_fetched_hour
+    # Only update if we actually fetched new data; otherwise preserve existing attr
+    if new_points > 0:
+        # Last fetched hour is start_hour + (new_points - 1) * 6
+        # e.g., if we fetched hours 0,6,12 (3 points), last fetched = 0 + 2*6 = 12
+        last_fetched_hour = start_hour + (new_points - 1) * 6
+        combined.attrs['last_fetched_hour'] = last_fetched_hour
+    # If no new data, keep the existing last_fetched_hour attr unchanged
 
     is_complete = total_hours_fetched >= int(expected_points * 0.95)
 
